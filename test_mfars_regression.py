@@ -22,7 +22,10 @@ from tqdm.auto import tqdm
 from opentslm.model.llm.OpenTSLMRegressionSP import OpenTSLMRegressionSP
 from opentslm.model.regression.ridge_window import RidgeWindowRegressor
 from opentslm.time_series_datasets.frda.FRDAMFARSDataset import FRDAMFARSDataset
-from opentslm.time_series_datasets.frda.frda_loader import create_split_manifest
+from opentslm.time_series_datasets.frda.frda_loader import (
+    create_split_manifest,
+    create_split_manifest_from_split_csv,
+)
 from opentslm.time_series_datasets.util import extend_time_series_to_match_patch_size_and_aggregate
 
 
@@ -345,9 +348,11 @@ def main():
     parser.add_argument("--checkpoint", type=str, required=True)
 
     parser.add_argument("--split-manifest", type=str, default=None)
+    parser.add_argument("--split-adults-csv", type=str, default=None,
+                        help="Path to split_adults.csv for canonical participant-level split.")
     parser.add_argument("--metadata-csv", type=str, default=None)
     parser.add_argument("--json-root", type=str, default=None)
-    parser.add_argument("--target", type=str, default="mFARS")
+    parser.add_argument("--target", type=str, default="mfars_total")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--group-id-strategy",
@@ -403,18 +408,27 @@ def main():
             )
         split_manifest_path = str(output_dir / "split_manifest.json")
         if not Path(split_manifest_path).exists():
-            create_split_manifest(
-                args.metadata_csv,
-                args.json_root,
-                output_path=split_manifest_path,
-                target_col=args.target,
-                seed=args.seed,
-                train_ratio=0.70,
-                val_ratio=0.15,
-                test_ratio=0.15,
-                group_id_strategy=args.group_id_strategy,
-                filename_group_prefix_len=args.filename_group_prefix_len,
-            )
+            if args.split_adults_csv is not None:
+                create_split_manifest_from_split_csv(
+                    args.metadata_csv,
+                    args.split_adults_csv,
+                    args.json_root,
+                    output_path=split_manifest_path,
+                    target_col=args.target,
+                )
+            else:
+                create_split_manifest(
+                    args.metadata_csv,
+                    args.json_root,
+                    output_path=split_manifest_path,
+                    target_col=args.target,
+                    seed=args.seed,
+                    train_ratio=0.70,
+                    val_ratio=0.15,
+                    test_ratio=0.15,
+                    group_id_strategy=args.group_id_strategy,
+                    filename_group_prefix_len=args.filename_group_prefix_len,
+                )
 
     window_size, stride, median_kernel_size, normalize, upsample_test3 = _resolve_preproc(
         args,

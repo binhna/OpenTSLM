@@ -617,6 +617,108 @@ def create_split_manifest(
     return manifest
 
 
+def create_split_manifest_from_split_csv(
+    metadata_csv: str,
+    split_csv: str,
+    json_root: str,
+    *,
+    output_path: str,
+    target_col: str = "mfars_total",
+) -> Dict[str, Any]:
+    """Build a split manifest from master_adults.csv + split_adults.csv.
+
+    Uses the canonical participant-level split instead of a random re-split.
+    ``split_csv`` must have columns ``participant_id`` and ``split``
+    (values: train / val / test).
+    """
+    meta_df = pd.read_csv(metadata_csv)
+    split_df = pd.read_csv(split_csv)
+
+    if target_col not in meta_df.columns:
+        raise ValueError(f"Missing target column '{target_col}' in {metadata_csv}")
+    if "participant_id" not in meta_df.columns:
+        raise ValueError(f"Missing 'participant_id' column in {metadata_csv}")
+    if "participant_id" not in split_df.columns or "split" not in split_df.columns:
+        raise ValueError(f"split_csv must have 'participant_id' and 'split' columns: {split_csv}")
+
+    split_map: Dict[str, str] = {
+        str(row["participant_id"]): str(row["split"])
+        for _, row in split_df.iterrows()
+    }
+
+    json_root_path = Path(json_root)
+    split_records: Dict[str, List[Dict[str, Any]]] = {
+        "train": [],
+        "validation": [],
+        "test": [],
+    }
+    groups: Dict[str, List[str]] = {"train": [], "validation": [], "test": []}
+
+    seen_groups: Dict[str, str] = {}
+    for row in meta_df.to_dict(orient="records"):
+        target = _safe_float(row.get(target_col))
+        if np.isnan(target):
+            continue
+
+        pid = str(_safe_int(row.get("participant_id"), default=-1))
+        if pid == "-1":
+            continue
+
+        split_label = split_map.get(pid)
+        if split_label is None:
+            continue
+        # Remap split CSV label "val" → manifest key "validation"
+        if split_label == "val":
+            split_label = "validation"
+        if split_label not in split_records:
+            continue
+
+        file_name = _safe_str(row.get("filename"))
+        if file_name == "":
+            continue
+
+        json_path = json_root_path / file_name
+        if not json_path.exists():
+            continue
+
+        patient_id = _safe_str(row.get("participant_id"))
+        split_records[split_label].append(
+            {
+                "patient_id": patient_id,
+                "group_id": patient_id,
+                "visit_date": _safe_str(row.get("recording_date")),
+                "device": _safe_str(row.get("device_type")),
+                "file_name": file_name,
+                "json_path": str(json_path),
+                "target": float(target),
+                "source_column": "filename",
+                "source_test_id": -1,
+            }
+        )
+
+        if pid not in seen_groups:
+            seen_groups[pid] = split_label
+            groups[split_label].append(pid)
+
+    manifest = {
+        "created_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "metadata_csv": str(metadata_csv),
+        "split_csv": str(split_csv),
+        "json_root": str(json_root),
+        "target_col": target_col,
+        "group_key": "participant_id",
+        "groups": groups,
+        "records": split_records,
+    }
+
+    output_file = Path(output_path)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    with output_file.open("w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
+
+    return manifest
+
+
 def load_split_manifest(path: str) -> Dict[str, Any]:
     """Load a split manifest from disk and perform minimal validation."""
     with open(path, "r", encoding="utf-8") as f:
