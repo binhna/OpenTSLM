@@ -8,7 +8,7 @@
 #
 # Paths are hard-coded for VM ben. Edit the DATA_* variables if needed.
 
-set -euo pipefail
+set -uo pipefail
 
 # ── Python path ───────────────────────────────────────────────────────────────
 # Ensure 'opentslm' package is importable when running from project root.
@@ -93,22 +93,28 @@ run_experiment() {
     fi
 
     # Train
-    python train_mfars_regression.py \
+    if ! python train_mfars_regression.py \
         --metadata-csv "${METADATA_CSV}" \
         --split-adults-csv "${SPLIT_ADULTS_CSV}" \
         --json-root "${JSON_ROOT}" \
         --target mfars_total \
         --split-manifest "${SHARED_MANIFEST}" \
         --output-dir "${train_dir}" \
-        "${train_args[@]}"
+        "${train_args[@]}"; then
+        echo "  ERROR: training failed for ${run_name} — skipping test."
+        return 1
+    fi
 
     # Evaluate on test split
-    python test_mfars_regression.py \
+    if ! python test_mfars_regression.py \
         --checkpoint "${train_dir}/best_model.pt" \
         --split-manifest "${SHARED_MANIFEST}" \
         --metadata-csv "${METADATA_CSV}" \
         --json-root "${JSON_ROOT}" \
-        --output-dir "${test_dir}"
+        --output-dir "${test_dir}"; then
+        echo "  ERROR: test evaluation failed for ${run_name}"
+        return 1
+    fi
 
     log_run "${run_name}" "${train_dir}" "${test_dir}"
 }

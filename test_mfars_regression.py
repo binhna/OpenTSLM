@@ -467,7 +467,7 @@ def main():
             file_as_window_preds = _broadcast_file_predictions_to_windows(meta_rows, file_keys, file_preds)
             preds = blend_weight * preds + (1.0 - blend_weight) * file_as_window_preds
 
-        if "hgbr_file_model" in checkpoint:
+        if checkpoint.get("hgbr_file_model") is not None:
             hgbr_model = checkpoint["hgbr_file_model"]
             hgbr_blend_weight = float(checkpoint.get("ridge_hgbr_blend_weight", 1.0))
             rich_x, rich_meta = _build_rich_eval_arrays(test_dataset)
