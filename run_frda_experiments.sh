@@ -10,6 +10,10 @@
 
 set -euo pipefail
 
+# ── Python path ───────────────────────────────────────────────────────────────
+# Ensure 'opentslm' package is importable when running from project root.
+export PYTHONPATH="${PYTHONPATH:-}:$(pwd)/src"
+
 # ── Paths ────────────────────────────────────────────────────────────────────
 METADATA_CSV="/home/ben/projects/claude/ml-aims/data/master_adults.csv"
 SPLIT_ADULTS_CSV="/home/ben/projects/claude/ml-aims/results/split_adults.csv"
@@ -30,69 +34,41 @@ log_run() {
     local train_dir="$2"
     local test_dir="$3"
 
-    # Pull val metrics from run_config.json produced by train script
-    local val_file_r2 val_file_mae val_file_rmse val_file_pearson
-    val_file_r2=$(python3 -c "
-import json, sys
-cfg = json.load(open('${train_dir}/run_config.json'))
-print(cfg.get('best_val_file_r2', 'null'))
-" 2>/dev/null || echo "null")
-    val_file_mae=$(python3 -c "
-import json
-cfg = json.load(open('${train_dir}/run_config.json'))
-print(cfg.get('best_val_file_mae', 'null'))
-" 2>/dev/null || echo "null")
+    python3 - "${run_name}" "${train_dir}" "${test_dir}" "${LOG_FILE}" <<'PYEOF'
+import json, datetime, sys, os
 
-    # Pull test metrics
-    local test_r2 test_mae test_rmse test_pearson
-    test_r2=$(python3 -c "
-import json
-m = json.load(open('${test_dir}/test_metrics.json'))
-print(m['file']['r2'])
-" 2>/dev/null || echo "null")
-    test_mae=$(python3 -c "
-import json
-m = json.load(open('${test_dir}/test_metrics.json'))
-print(m['file']['mae'])
-" 2>/dev/null || echo "null")
-    test_rmse=$(python3 -c "
-import json
-m = json.load(open('${test_dir}/test_metrics.json'))
-print(m['file']['rmse'])
-" 2>/dev/null || echo "null")
-    test_pearson=$(python3 -c "
-import json
-m = json.load(open('${test_dir}/test_metrics.json'))
-print(m['file']['pearson_r'])
-" 2>/dev/null || echo "null")
+run_name, train_dir, test_dir, log_file = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 
-    # Grab the full training config as context
-    local config_json
-    config_json=$(python3 -c "
-import json
-cfg = json.load(open('${train_dir}/run_config.json'))
-print(json.dumps(cfg))
-" 2>/dev/null || echo "{}")
+cfg = {}
+cfg_path = os.path.join(train_dir, "run_config.json")
+if os.path.exists(cfg_path):
+    with open(cfg_path) as f:
+        cfg = json.load(f)
 
-    python3 -c "
-import json, datetime
+test_metrics = {}
+test_path = os.path.join(test_dir, "test_metrics.json")
+if os.path.exists(test_path):
+    with open(test_path) as f:
+        test_metrics = json.load(f)
+
+file_m = test_metrics.get("file", {})
 entry = {
-    'run_name': '${run_name}',
-    'timestamp': datetime.datetime.utcnow().isoformat(),
-    'train_dir': '${train_dir}',
-    'test_dir': '${test_dir}',
-    'val_file_r2': ${val_file_r2},
-    'val_file_mae': ${val_file_mae},
-    'test_file_r2': ${test_r2},
-    'test_file_mae': ${test_mae},
-    'test_file_rmse': ${test_rmse},
-    'test_file_pearson_r': ${test_pearson},
-    'config': ${config_json},
+    "run_name": run_name,
+    "timestamp": datetime.datetime.utcnow().isoformat(),
+    "train_dir": train_dir,
+    "test_dir": test_dir,
+    "val_file_r2": cfg.get("best_val_file_r2"),
+    "val_file_mae": cfg.get("best_val_file_mae"),
+    "test_file_r2": file_m.get("r2"),
+    "test_file_mae": file_m.get("mae"),
+    "test_file_rmse": file_m.get("rmse"),
+    "test_file_pearson_r": file_m.get("pearson_r"),
+    "config": cfg,
 }
-with open('${LOG_FILE}', 'a') as f:
-    f.write(json.dumps(entry) + '\n')
-print(f'  logged: val_r2={entry[\"val_file_r2\"]}, test_r2={entry[\"test_file_r2\"]}, test_pearson={entry[\"test_file_pearson_r\"]}')
-"
+with open(log_file, "a") as f:
+    f.write(json.dumps(entry) + "\n")
+print(f"  logged: val_r2={entry['val_file_r2']}, test_r2={entry['test_file_r2']}, test_pearson={entry['test_file_pearson_r']}")
+PYEOF
 }
 
 # ── Helper: train then evaluate ───────────────────────────────────────────────
@@ -232,12 +208,18 @@ echo " ALL EXPERIMENTS COMPLETE"
 echo " Log file: ${LOG_FILE}"
 echo "════════════════════════════════════════════════════"
 
-python3 -c "
-import json
-entries = [json.loads(l) for l in open('${LOG_FILE}')]
-# Only show entries from this run set
-print(f'{'Run':<45} {'val_r2':>8} {'test_r2':>8} {'test_pearson':>13}')
+python3 - "${LOG_FILE}" <<'PYEOF'
+import json, sys
+log_file = sys.argv[1]
+entries = [json.loads(l) for l in open(log_file)]
+print(f"{'Run':<45} {'val_r2':>8} {'test_r2':>8} {'test_pearson':>13}")
 print('-' * 80)
 for e in entries:
-    print(f\"{e['run_name']:<45} {str(e.get('val_file_r2','?')):>8} {str(e.get('test_file_r2','?')):>8} {str(e.get('test_file_pearson_r','?')):>13}\")
-"
+    vr2 = e.get('val_file_r2')
+    tr2 = e.get('test_file_r2')
+    tp  = e.get('test_file_pearson_r')
+    vr2s = f"{vr2:.4f}" if isinstance(vr2, float) else str(vr2)
+    tr2s = f"{tr2:.4f}" if isinstance(tr2, float) else str(tr2)
+    tps  = f"{tp:.4f}"  if isinstance(tp,  float) else str(tp)
+    print(f"{e['run_name']:<45} {vr2s:>8} {tr2s:>8} {tps:>13}")
+PYEOF
