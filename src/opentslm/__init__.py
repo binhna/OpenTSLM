@@ -3,6 +3,13 @@
 #
 # SPDX-License-Identifier: MIT
 
-from opentslm.model.llm.OpenTSLM import OpenTSLM
-
 __all__ = ["OpenTSLM"]
+
+
+def __getattr__(name):
+    if name == "OpenTSLM":
+        # Lazy import so dataset utilities can be used without optional Flamingo deps.
+        from opentslm.model.llm.OpenTSLM import OpenTSLM
+
+        return OpenTSLM
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

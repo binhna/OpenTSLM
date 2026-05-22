@@ -20,3 +20,16 @@ upload_to_huggingface.py
 dist/
 
 *.license
+
+# FRDA experiment data — clinical/patient data, not for public repo
+metadata_filename_device_mfars.csv
+resplit_train_with_adl.csv
+
+# Experiment results — model weights, predictions with patient IDs, large files
+results/
+
+# Notebooks with cell outputs containing data
+notebooks/
+
+# Scratch/dev scripts
+src/test_simple_generation.py

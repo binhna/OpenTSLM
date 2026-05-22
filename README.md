@@ -237,6 +237,79 @@ python curriculum_learning.py --model OpenTSLMFlamingo --eval_only
 - `--gradient_checkpointing`: Enable gradient checkpointing for memory efficiency
 - `--verbose`: Enable verbose logging
 
+### FRDA mFARS Regression (Train/Test/Predict)
+
+This repository also provides a dedicated regression pipeline for predicting **mFARS** from AIM JSON sensor files.
+It uses patient-grouped train/validation/test splits and reports both window-level and file-level metrics.
+The training script supports two backends:
+- `ridge_window` (default, stronger baseline for this dataset; uses a blended window-level + file-level ridge model)
+- `opentslm` (LLM-conditioned regression path)
+
+Required inputs:
+- Metadata CSV with target column (default `mFARS`) and either:
+  - legacy file columns: `file_name_01/02/03` (+ `patient_id` / `patient ID`), or
+  - merged file column: `filename` (optionally `device`)
+- JSON folder path (for example `/home/ben/data/imu_biokin_data/s3_backup_30Sep2025`)
+
+Train:
+
+```bash
+python train_mfars_regression.py \
+  --metadata-csv resplit_train_with_adl.csv \
+  --json-root /home/ben/data/imu_biokin_data/s3_backup_30Sep2025 \
+  --target mFARS \
+  --batch-size 4 \
+  --epochs 100
+
+# Merged filename schema example:
+python train_mfars_regression.py \
+  --metadata-csv metadata_filename_device_mfars.csv \
+  --json-root /home/ben/data/imu_biokin_data/s3_backup_30Sep2025 \
+  --target mFARS \
+  --group-id-strategy filename_prefix \
+  --filename-group-prefix-len 12
+
+# Optional OpenTSLM backend:
+python train_mfars_regression.py \
+  --model-backend opentslm \
+  --metadata-csv resplit_train_with_adl.csv \
+  --json-root /home/ben/data/imu_biokin_data/s3_backup_30Sep2025 \
+  --llm-id /home/ben/pretrained/gemma-3-270m-it \
+  --target mFARS \
+  --batch-size 1 \
+  --epochs 30
+```
+
+Test:
+
+```bash
+python test_mfars_regression.py \
+  --checkpoint <path/to/best_model.pt> \
+  --metadata-csv resplit_train_with_adl.csv \
+  --json-root /home/ben/data/imu_biokin_data/s3_backup_30Sep2025 \
+  --split-manifest <path/to/split_manifest.json>
+```
+
+Split options for manifest generation (`train` and `test` scripts):
+- `--group-id-strategy {auto,patient_id,filename_prefix,filename_full}`
+- `--filename-group-prefix-len <int>` (used by `auto` and `filename_prefix` when metadata lacks explicit `patient_id`)
+
+Predict one JSON file:
+
+```bash
+python predict_mfars_from_json.py \
+  --json-file <path/to/file.json> \
+  --checkpoint <path/to/best_model.pt>
+```
+
+Generated artifacts include:
+- `train_history.json`
+- `val_predictions.jsonl`
+- `test_predictions_window.jsonl`
+- `test_predictions_file.jsonl`
+- `test_metrics.json`
+- `test_summary.txt`
+
 ### Helper Scripts
 
 Helper scripts for analysis, testing, and batch processing are available in the `scripts/` directory:

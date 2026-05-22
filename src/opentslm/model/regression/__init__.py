@@ -3,6 +3,6 @@
 #
 # SPDX-License-Identifier: MIT
 
-from opentslm.model.llm.OpenTSLMRegressionSP import OpenTSLMRegressionSP
+from opentslm.model.regression.ridge_window import RidgeWindowRegressor
 
-__all__ = ["OpenTSLMRegressionSP"]
+__all__ = ["RidgeWindowRegressor"]
