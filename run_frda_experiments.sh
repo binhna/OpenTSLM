@@ -14,6 +14,17 @@ set -uo pipefail
 # Ensure 'opentslm' package is importable when running from project root.
 export PYTHONPATH="${PYTHONPATH:-}:$(pwd)/src"
 
+# ── GPU sanity check ──────────────────────────────────────────────────────────
+python3 -c "
+import torch, sys
+if not torch.cuda.is_available():
+    print('ERROR: CUDA not available. Check nvidia-smi / driver state before running LLM experiments.')
+    print('Ridge baseline will still work on CPU, but LLM runs will be unusably slow.')
+    sys.exit(1)
+print(f'GPU OK: {torch.cuda.get_device_name(0)}, {torch.cuda.get_device_properties(0).total_memory // 1024**3} GB')
+"
+GPU_OK=$?
+
 # ── Paths ────────────────────────────────────────────────────────────────────
 METADATA_CSV="/home/ben/projects/claude/ml-aims/data/master_adults.csv"
 SPLIT_ADULTS_CSV="/home/ben/projects/claude/ml-aims/results/split_adults.csv"
@@ -144,6 +155,13 @@ run_experiment "ridge_no_test_id" \
     --ridge-use-hgbr-blend \
     --ridge-no-test-id
 
+# ── 2-4: LLM experiments — skip entirely if GPU unavailable ──────────────────
+if [[ "${GPU_OK}" -ne 0 ]]; then
+    echo ""
+    echo "WARNING: GPU not available — skipping all OpenTSLM (LLM) experiments."
+    echo "Fix the GPU driver and re-run; ridge results above are already logged."
+else
+
 # ── 2. OpenTSLM: Gemma-3-270M (frozen backbone, encoder+head only) ──────────
 echo "=== GEMMA-3-270M EXPERIMENTS ==="
 GEMMA="${PRETRAINED}/gemma-3-270m-it"
@@ -204,6 +222,8 @@ run_experiment "opentslm_llama1b_lr1e3" \
     --lr-encoder 1e-3 --lr-projector 5e-4 --lr-regression-head 5e-4 \
     --epochs 60 --patience 15 --batch-size 4 \
     --encoder-patch-size 50
+
+fi  # end GPU_OK block
 
 # ════════════════════════════════════════════════════════════════════
 # SUMMARY
