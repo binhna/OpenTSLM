@@ -25,6 +25,7 @@ from tqdm.auto import tqdm
 from transformers import get_linear_schedule_with_warmup
 
 from opentslm.model.llm.OpenTSLMRegressionSP import OpenTSLMRegressionSP
+from opentslm.model.llm.MOMENTRegressionSP import MOMENTRegressionSP
 from opentslm.model.regression.ridge_window import RidgeWindowRegressor
 from opentslm.time_series_datasets.frda.FRDAMFARSDataset import FRDAMFARSDataset
 from opentslm.time_series_datasets.frda.frda_loader import (
@@ -849,6 +850,171 @@ def _train_opentslm_backend(
     return history, run_summary
 
 
+def _train_moment_backend(
+    args: argparse.Namespace,
+    *,
+    device: str,
+    output_dir: Path,
+    split_manifest_path: str,
+    train_dataset: FRDAMFARSDataset,
+    val_dataset: FRDAMFARSDataset,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Train MOMENT frozen encoder + regression head. Mirrors opentslm backend."""
+
+    def _collate_plain(batch):
+        return batch
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        collate_fn=_collate_plain,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=max(1, min(args.batch_size, 8)),
+        shuffle=False,
+        collate_fn=_collate_plain,
+    )
+
+    if len(train_loader) == 0:
+        raise RuntimeError("Training loader is empty")
+
+    model = MOMENTRegressionSP(
+        moment_path=args.llm_id,
+        device=device,
+    )
+
+    target_mean, target_std = _compute_target_stats(train_dataset) if args.target_normalize else (0.0, 1.0)
+
+    optimizer = AdamW(
+        list(model.parameters()),
+        lr=args.lr_regression_head,
+        weight_decay=args.weight_decay,
+    )
+    total_steps = args.epochs * len(train_loader)
+    warmup_steps = int(args.warmup_frac * total_steps)
+    scheduler = get_linear_schedule_with_warmup(
+        optimizer, num_warmup_steps=warmup_steps, num_training_steps=total_steps
+    )
+
+    history: List[Dict[str, Any]] = []
+    best_epoch = -1
+    best_file_r2 = -float("inf")
+    best_file_mae = float("inf")
+    epochs_without_improvement = 0
+
+    best_checkpoint_path = output_dir / "best_model.pt"
+    best_val_predictions_path = output_dir / "val_predictions.jsonl"
+
+    for epoch in range(1, args.epochs + 1):
+        model.train()
+        running_losses: List[float] = []
+
+        for batch in tqdm(train_loader, desc=f"MOMENT Train epoch {epoch}/{args.epochs}"):
+            optimizer.zero_grad()
+            preds_norm = model.predict_batch(batch)
+            targets_raw = torch.tensor(
+                [float(s["target"]) for s in batch],
+                dtype=torch.float32,
+                device=device,
+            )
+            targets_norm = (targets_raw - target_mean) / target_std
+            weights = (
+                torch.tensor([1.0 / max(float(s["num_windows_for_file"]), 1.0) for s in batch],
+                             dtype=torch.float32, device=device)
+                if args.file_balanced_loss else None
+            )
+            loss = _compute_weighted_loss_from_preds(preds_norm, targets_norm, args.loss, weights)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(list(model.parameters()), args.grad_clip)
+            optimizer.step()
+            scheduler.step()
+            running_losses.append(float(loss.item()))
+
+        train_loss = float(np.mean(running_losses)) if running_losses else float("nan")
+
+        # Validation
+        model.eval()
+        all_preds, all_targets_list, val_rows, val_losses = [], [], [], []
+        with torch.no_grad():
+            for batch in val_loader:
+                preds_norm = model.predict_batch(batch)
+                targets_raw = torch.tensor(
+                    [float(s["target"]) for s in batch],
+                    dtype=torch.float32, device=device,
+                )
+                targets_norm = (targets_raw - target_mean) / target_std
+                weights = (
+                    torch.tensor([1.0 / max(float(s["num_windows_for_file"]), 1.0) for s in batch],
+                                 dtype=torch.float32, device=device)
+                    if args.file_balanced_loss else None
+                )
+                loss = _compute_weighted_loss_from_preds(preds_norm, targets_norm, args.loss, weights)
+                val_losses.append(float(loss.item()))
+                preds_raw = (preds_norm * target_std + target_mean).detach().cpu().numpy()
+                targets_np = targets_raw.detach().cpu().numpy()
+                all_preds.extend(preds_raw.tolist())
+                all_targets_list.extend(targets_np.tolist())
+                for s, pred_val, target_val in zip(batch, preds_raw, targets_np):
+                    val_rows.append({
+                        "json_path": s["json_path"], "file_name": s["file_name"],
+                        "patient_id": s["patient_id"], "visit_date": s.get("visit_date", ""),
+                        "window_index": int(s["window_index"]),
+                        "num_windows_for_file": int(s["num_windows_for_file"]),
+                        "test_id": int(s["test_id"]), "raw_length": int(s["raw_length"]),
+                        "processed_length": int(s["processed_length"]),
+                        "prediction": float(pred_val), "target": float(target_val),
+                    })
+
+        window_metrics = _metrics(np.array(all_preds), np.array(all_targets_list))
+        _, file_metrics = _aggregate_file_rows(val_rows)
+        val_metrics = {"loss": float(np.mean(val_losses)), "window": window_metrics, "file": file_metrics}
+
+        epoch_summary = {
+            "epoch": epoch, "train_loss": train_loss,
+            "val_loss": val_metrics["loss"],
+            "val_window_r2": window_metrics["r2"], "val_window_mae": window_metrics["mae"],
+            "val_file_r2": file_metrics["r2"], "val_file_mae": file_metrics["mae"],
+        }
+        history.append(epoch_summary)
+        print(f"Epoch {epoch}: train_loss={train_loss:.4f}, "
+              f"val_file_r2={file_metrics['r2']:.4f}, val_file_mae={file_metrics['mae']:.4f}")
+
+        better_r2 = file_metrics["r2"] > (best_file_r2 + 1e-12)
+        tied_r2 = abs(file_metrics["r2"] - best_file_r2) <= 1e-12
+        is_better = better_r2 or (tied_r2 and file_metrics["mae"] < best_file_mae - 1e-12)
+
+        if is_better:
+            best_epoch = epoch
+            best_file_r2 = float(file_metrics["r2"])
+            best_file_mae = float(file_metrics["mae"])
+            epochs_without_improvement = 0
+            model.store_to_file(str(best_checkpoint_path), extra_state={
+                "model_type": "moment", "epoch": epoch,
+                "val_metrics": val_metrics,
+                "target_stats": {"mean": float(target_mean), "std": float(target_std),
+                                 "normalized": bool(args.target_normalize)},
+                "training_config": vars(args),
+                "split_manifest_path": split_manifest_path,
+            })
+            _save_jsonl(str(best_val_predictions_path), val_rows)
+            print(f"Saved new best MOMENT checkpoint at epoch {epoch}")
+        else:
+            epochs_without_improvement += 1
+            if epochs_without_improvement >= args.patience:
+                print(f"Early stopping at epoch {epoch}")
+                break
+
+    return history, {
+        "best_epoch": best_epoch,
+        "best_val_file_r2": best_file_r2,
+        "best_val_file_mae": best_file_mae,
+        "target_mean": float(target_mean),
+        "target_std": float(target_std),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train FRDA mFARS regression model")
     parser.add_argument("--metadata-csv", type=str, required=True)
@@ -875,7 +1041,7 @@ def main():
         help="Prefix length used when --group-id-strategy includes filename_prefix logic.",
     )
 
-    parser.add_argument("--model-backend", choices=["ridge_window", "opentslm"], default="ridge_window")
+    parser.add_argument("--model-backend", choices=["ridge_window", "opentslm", "moment"], default="ridge_window")
     parser.add_argument("--llm-id", type=str, default="/home/ben/pretrained/gemma-3-270m-it")
     parser.add_argument("--device", type=str, default=None)
 
@@ -998,6 +1164,15 @@ def main():
     if args.model_backend == "ridge_window":
         history, run_summary = _train_ridge_backend(
             args,
+            output_dir=output_dir,
+            split_manifest_path=split_manifest_path,
+            train_dataset=train_dataset,
+            val_dataset=val_dataset,
+        )
+    elif args.model_backend == "moment":
+        history, run_summary = _train_moment_backend(
+            args,
+            device=device,
             output_dir=output_dir,
             split_manifest_path=split_manifest_path,
             train_dataset=train_dataset,

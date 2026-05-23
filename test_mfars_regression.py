@@ -20,6 +20,7 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from opentslm.model.llm.OpenTSLMRegressionSP import OpenTSLMRegressionSP
+from opentslm.model.llm.MOMENTRegressionSP import MOMENTRegressionSP
 from opentslm.model.regression.ridge_window import RidgeWindowRegressor
 from opentslm.time_series_datasets.frda.FRDAMFARSDataset import FRDAMFARSDataset
 from opentslm.time_series_datasets.frda.frda_loader import (
@@ -480,6 +481,37 @@ def main():
             row = dict(meta)
             row["prediction"] = float(pred)
             window_rows.append(row)
+    elif model_type == "moment":
+        target_stats = checkpoint.get("target_stats", {})
+        target_mean = float(target_stats.get("mean", 0.0))
+        target_std = float(target_stats.get("std", 1.0))
+        if target_std <= 0.0:
+            target_std = 1.0
+        moment_path = (
+            args.llm_id
+            or checkpoint.get("training_config", {}).get("llm_id")
+            or checkpoint.get("regression_config", {}).get("moment_path")
+        )
+        test_loader = DataLoader(test_dataset, batch_size=max(1, args.batch_size),
+                                 shuffle=False, collate_fn=lambda b: b)
+        model = MOMENTRegressionSP(moment_path=moment_path, device=device)
+        model.load_from_file(str(checkpoint_path))
+        model.eval()
+
+        with torch.no_grad():
+            for batch in tqdm(test_loader, desc="Testing MOMENT"):
+                preds_norm = model.predict_batch(batch).detach().cpu().numpy()
+                preds = preds_norm * target_std + target_mean
+                for sample, pred in zip(batch, preds.tolist()):
+                    window_rows.append({
+                        "json_path": sample["json_path"], "file_name": sample["file_name"],
+                        "patient_id": sample["patient_id"], "visit_date": sample.get("visit_date", ""),
+                        "window_index": int(sample["window_index"]),
+                        "num_windows_for_file": int(sample["num_windows_for_file"]),
+                        "test_id": int(sample["test_id"]), "raw_length": int(sample["raw_length"]),
+                        "processed_length": int(sample["processed_length"]),
+                        "prediction": float(pred), "target": float(sample["target"]),
+                    })
     else:
         llm_id, encoder_patch_size = _infer_model_settings(
             checkpoint,

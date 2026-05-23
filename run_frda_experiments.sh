@@ -223,6 +223,22 @@ run_experiment "opentslm_llama1b_lr1e3" \
     --epochs 60 --patience 15 --batch-size 4 \
     --encoder-patch-size 50
 
+# ── 5. MOMENT-1-large (frozen T5-large backbone, domain-specific TS model) ───
+echo "=== MOMENT-1-LARGE EXPERIMENTS ==="
+MOMENT="${PRETRAINED}/models--AutonLab--MOMENT-1-large/snapshots/ca58581bc7bea2ebed4e80dc0a3e4b8b609c6ecc"
+
+run_experiment "moment_lr2e4" \
+    --model-backend moment \
+    --llm-id "${MOMENT}" \
+    --lr-regression-head 2e-4 \
+    --epochs 60 --patience 15 --batch-size 8
+
+run_experiment "moment_lr1e3" \
+    --model-backend moment \
+    --llm-id "${MOMENT}" \
+    --lr-regression-head 1e-3 \
+    --epochs 60 --patience 15 --batch-size 8
+
 fi  # end GPU_OK block
 
 # ════════════════════════════════════════════════════════════════════
@@ -233,6 +249,20 @@ echo "════════════════════════�
 echo " ALL EXPERIMENTS COMPLETE"
 echo " Log file: ${LOG_FILE}"
 echo "════════════════════════════════════════════════════"
+
+# ── Phase 2: Device-stratified results (instant, no GPU needed) ──────────────
+echo ""
+echo "=== PHASE 2: DEVICE-STRATIFIED RESULTS ==="
+python compute_device_stratified.py || echo "  WARNING: device stratification failed"
+
+# ── Phase 2: 5-fold CV on train+val (ridge, CPU) ─────────────────────────────
+echo ""
+echo "=== PHASE 2: 5-FOLD CROSS-VALIDATION ==="
+python run_cv.py \
+    --metadata-csv "${METADATA_CSV}" \
+    --split-adults-csv "${SPLIT_ADULTS_CSV}" \
+    --json-root "${JSON_ROOT}" \
+    --output-dir "${RESULTS_DIR}" || echo "  WARNING: CV run failed"
 
 python3 - "${LOG_FILE}" <<'PYEOF'
 import json, sys

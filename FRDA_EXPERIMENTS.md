@@ -112,14 +112,65 @@ All metrics are file-level (per recording, not per window).
 
 ---
 
-## What to Try Next
+## Q1 Publication Plan
 
-1. **Cross-validate on train+val instead of val-only selection.** With 102 train+val participants, a 5-fold CV would give much more stable model selection than a 17-participant holdout. The test set stays locked.
+### Reviewer Assessment
 
-2. **Stratify by device in the val set.** Currently val has only 6 pendant recordings. Ensure the split preserves device proportions.
+The current results are at the threshold of Q1 publishability but not there yet. The core findings are strong: R²=0.54, Pearson=0.78 on a 127-participant clinical cohort is competitive with the best published IMU-to-severity regression papers. The blocker is the story is incomplete — a reviewer will ask "why use an LLM at all if ridge is just as good?" and there is currently no answer.
 
-3. **Try a linear probe on frozen LLM embeddings.** Rather than training the encoder from scratch, feed preprocessed windows directly through the frozen LLM (as patch tokens) and fit a ridge on the pooled embeddings. This isolates whether the LLM's representation is useful at all without worrying about encoder training.
+The paper needs to be positioned as: *"The first systematic evaluation of frozen pretrained sequence models as time-series encoders for IMU-based Friedreich Ataxia severity prediction, benchmarked against a domain-specific time-series foundation model (MOMENT) and a handcrafted-feature baseline, across three wearable devices."* That is a publishable contribution to JBHI, npj Digital Medicine, or similar.
 
-4. **Clinical context fusion (TTCA-style).** Freeze the LLM, use it to encode a text string of clinical covariates (age, staging, GAA repeat lengths, device type), then cross-attend the clinical embedding into the patch token sequence before the regression head. The hypothesis is that mFARS is partly predicted by static patient characteristics the sensor alone can't see.
+Three additions are required. No more LLM hyperparameter sweeps — the sensitivity findings are already clear and more sweeps do not change the narrative.
 
-5. **Device-specific models.** Train and evaluate separately on cup, spoon, and pendant rather than pooling all devices. The mFARS subscores map naturally: cup+spoon → upper limb, pendant → upright stability.
+---
+
+### Phase 2: Three Required Additions
+
+#### Item 1 — MOMENT as a frozen encoder (Priority: HIGH)
+
+**Why:** MOMENT-1-large (AutonLab, 385M parameters, T5-large backbone, pretrained on 1B time-series samples across diverse domains) is the scientifically correct comparison. Comparing general-purpose LLMs to a domain-specific time-series foundation model is the central research question for a Q1 paper. If MOMENT beats LLMs, the finding is "pretrained temporal representations matter, not language knowledge." If they are comparable, the finding is "generic sequence models are sufficient encoders for this task." Either result is publishable.
+
+**How:** The MOMENT model is already downloaded at `/home/ben/pretrained/models--AutonLab--MOMENT-1-large/`. It uses a T5-large backbone (d_model=1024, 24 encoder layers) with patch_len=8 and patch_stride_len=8. It is encoder-only, so pooling the encoder output is natural. A `MOMENTRegressionSP` class wraps the frozen MOMENT encoder with the same MLP regression head used for other models. The `momentfm` library needs to be pip-installed in the llm conda env on the VM. Input must be reshaped to MOMENT's expected format: [B, C, T] with seq_len=512 (so 3000-sample windows are divided into 6 non-overlapping 512-sample segments, each processed independently and averaged before the head).
+
+**Script:** `train_mfars_regression.py --model-backend moment`
+
+**Expected run time:** ~30 minutes per run on RTX 4080.
+
+---
+
+#### Item 2 — 5-fold Cross-Validation on train+val (Priority: HIGH)
+
+**Why:** The 17-participant val set is too small for reliable hyperparameter selection (6 pendant recordings). A reviewer will flag this. 5-fold CV on all 102 train+val participants gives a stable generalization estimate. The test set remains locked. This runs on existing models — no new architecture required.
+
+**How:** A CV wrapper runs the ridge pipeline 5 times, each time holding out a different fifth of the 102 participants, aggregating predictions, and computing CV-pooled metrics. The same alpha grid search runs within each fold. Final reported metric is mean ± std across folds. The best model for test evaluation is still trained on full train split (canonical split) — CV is for validation metric stability only, not for producing the final checkpoint.
+
+**Script:** `run_cv.py` — outputs `results/cv_results.json` with per-fold and pooled metrics.
+
+---
+
+#### Item 3 — Device-stratified results (Priority: MEDIUM)
+
+**Why:** mFARS has anatomically distinct subscores. Cup and spoon capture upper limb function; pendant captures upright stability. A device-stratified table (cup / spoon / pendant separately) is standard in wearable clinical ML papers and is required for JBHI. It requires zero retraining — the test prediction files already contain `test_id` (1=cup, 2=spoon, 3=pendant).
+
+**How:** A post-processing script reads every completed `test_predictions_file.jsonl`, groups by `test_id`, and computes R², MAE, RMSE, Pearson r per device per model. Outputs `results/device_stratified_results.json` and a human-readable table.
+
+**Script:** `compute_device_stratified.py` — runs instantly on existing prediction files.
+
+---
+
+### Execution Plan
+
+1. Install `momentfm` on VM → wire `MOMENTRegressionSP` → add `moment` backend to training script → run 2 MOMENT experiments in tmux
+2. Write and run `compute_device_stratified.py` on existing predictions (instant)
+3. Write and run `run_cv.py` for ridge CV (fast, no GPU needed)
+4. Update `FRDA_EXPERIMENTS.md` with all Phase 2 results once complete
+
+All scripts live in the project root. Results append to `results/experiments_log.jsonl`. The `show_results.py` script is updated to show the device-stratified table.
+
+---
+
+### What NOT to do
+
+- Do not download or run more sub-1B LLMs. Qwen3-0.6B is already on the VM; running it adds a data point but not a finding.
+- Do not run wider hyperparameter sweeps on existing LLMs. The lr sensitivity is already documented and running more configs does not change the story.
+- Do not touch the test set until all model selection and CV is complete.
