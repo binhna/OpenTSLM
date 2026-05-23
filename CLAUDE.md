@@ -1,5 +1,10 @@
 # CLAUDE.md — OpenTSLM FRDA mFARS Prediction
 
+## Experiment notes
+
+Full experiment history, results, analysis, and next steps are in:
+**`FRDA_EXPERIMENTS.md`** — read this first to understand what has been tried and why before starting any new work.
+
 ## Project goal
 
 Fine-tune a time-series LLM to predict **mFARS** (Modified Friedreich Ataxia Rating Scale, 0–93) from raw 6-axis IMU sensor recordings (accelerometer + gyroscope) captured by three wearable AIM devices:
