@@ -1,0 +1,6 @@
+
+=== 5-Fold CV Results (Ridge, train+val participants) ===
+CV R²:      0.1915 ± 0.1628
+CV Pearson: 0.4794 ± 0.1493
+Pooled R²:  0.2114
+Pooled Pearson: 0.4717

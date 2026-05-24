@@ -160,12 +160,12 @@ Three additions are required. No more LLM hyperparameter sweeps — the sensitiv
 
 ### Execution Plan
 
-1. Install `momentfm` on VM → wire `MOMENTRegressionSP` → add `moment` backend to training script → run 2 MOMENT experiments in tmux
-2. Write and run `compute_device_stratified.py` on existing predictions (instant)
-3. Write and run `run_cv.py` for ridge CV (fast, no GPU needed)
-4. Update `FRDA_EXPERIMENTS.md` with all Phase 2 results once complete
+1. Install `momentfm` on VM → wire `MOMENTRegressionSP` → add `moment` backend to training script → run 2 MOMENT experiments in tmux ✅
+2. Write and run `compute_device_stratified.py` on existing predictions (instant) ✅
+3. Write and run `run_cv.py` for ridge CV (fast, no GPU needed) ✅
+4. Update `FRDA_EXPERIMENTS.md` with all Phase 2 results ✅
 
-All scripts live in the project root. Results append to `results/experiments_log.jsonl`. The `show_results.py` script is updated to show the device-stratified table.
+All scripts live in the project root. Results append to `results/experiments_log.jsonl`. View with `python3 show_results.py`.
 
 ---
 
@@ -174,3 +174,73 @@ All scripts live in the project root. Results append to `results/experiments_log
 - Do not download or run more sub-1B LLMs. Qwen3-0.6B is already on the VM; running it adds a data point but not a finding.
 - Do not run wider hyperparameter sweeps on existing LLMs. The lr sensitivity is already documented and running more configs does not change the story.
 - Do not touch the test set until all model selection and CV is complete.
+
+---
+
+## Phase 2 Results
+
+### MOMENT-1-large
+
+| Run | val R² | test R² | test Pearson r |
+|-----|--------|---------|----------------|
+| moment_lr2e4 | **0.7686** | 0.5217 | 0.7238 |
+| moment_lr1e3 | 0.7247 | 0.5354 | 0.7376 |
+
+MOMENT achieves the highest val R² of any model (0.77), substantially above ridge (0.47) and all LLMs. However, the test performance (0.52–0.54) is similar to ridge and Gemma. This large val–test gap (0.77 → 0.52) is the most important finding of Phase 2: MOMENT overfits the small val set during the epoch selection, even though the backbone is frozen.
+
+### Full Results Summary (all phases)
+
+| Run | val R² | test R² | test Pearson r |
+|-----|--------|---------|----------------|
+| ridge_alpha_grid_default | 0.4684 | **0.5428** | **0.7804** |
+| ridge_no_hgbr | 0.2471 | 0.2569 | 0.5349 |
+| ridge_no_test_id | 0.4683 | 0.5428 | 0.7805 |
+| opentslm_gemma270m_lr2e4 | 0.1676 | 0.3232 | 0.7367 |
+| opentslm_gemma270m_lr1e3 | 0.3200 | 0.5440 | 0.7724 |
+| opentslm_gemma270m_patch100 | 0.2463 | 0.3378 | 0.6326 |
+| opentslm_qwen05b_lr2e4 | 0.3586 | 0.5087 | 0.7697 |
+| opentslm_qwen05b_lr1e3 | −0.0052 | −0.0424 | −0.1282 |
+| opentslm_llama1b_lr2e4 | 0.3738 | 0.3946 | 0.6340 |
+| opentslm_llama1b_lr1e3 | 0.2019 | 0.1819 | 0.5840 |
+| moment_lr2e4 | **0.7686** | 0.5217 | 0.7238 |
+| moment_lr1e3 | 0.7247 | 0.5354 | 0.7376 |
+
+### Device-Stratified Results (file-level R²)
+
+| Run | all | cup | spoon | pendant |
+|-----|-----|-----|-------|---------|
+| ridge_alpha_grid_default | 0.5428 | 0.4421 | 0.4888 | 0.0096 |
+| opentslm_gemma270m_lr1e3 | 0.5440 | 0.4881 | 0.4548 | −0.1803 |
+| opentslm_qwen05b_lr2e4 | 0.5087 | 0.4903 | 0.5137 | −1.8901 |
+| moment_lr1e3 | 0.5354 | 0.3944 | 0.5534 | −0.2916 |
+| moment_lr2e4 | 0.5217 | 0.3205 | 0.5642 | 0.1298 |
+
+**The pendant (upright stability) result is near-zero or negative for every model.** Cup and spoon (upper limb) are where all predictive signal lives. This is the single most important clinical finding: mFARS upright stability may require a different feature space or model entirely, or the pendant data is insufficient (only 14 test recordings vs 38 cup / 34 spoon).
+
+### 5-Fold Cross-Validation (Ridge, train+val participants)
+
+```
+CV R²:      0.1915 ± 0.1628
+CV Pearson: 0.4794 ± 0.1493
+Pooled R²:  0.2114
+```
+
+This is substantially lower than the val-split R² of 0.47, and confirms what the val–test gaps have been signalling all along: **the 17-participant val set is too small and noisy for reliable model selection.** The true cross-validated generalisation of the ridge model on this cohort is ~R²=0.21, not 0.47. The test R²=0.54 actually outperforms the CV estimate, which likely reflects the test set having a more representative mFARS distribution (more pendant recordings, more severe patients).
+
+---
+
+## Revised Interpretation for Q1 Paper
+
+The core claim needs reframing in light of Phase 2. The headline finding is not "LLMs match ridge" — it is:
+
+1. **Cup and spoon are predictable; pendant is not.** Every model achieves R²=0.39–0.56 on upper-limb tasks but fails on upright stability (R²≈0, often negative). This has direct clinical implications: the 30-second standing test with this device/processing pipeline does not provide reliable mFARS-US prediction with current methods.
+
+2. **The val set is too small to distinguish models.** CV R²=0.19±0.16 vs val-split R²=0.47 shows the 17-participant holdout has high variance. Model selection based on val alone is unreliable. A larger cohort or stratified CV is needed.
+
+3. **MOMENT's high val score is misleading.** val R²=0.77 for MOMENT collapses to test R²=0.52 — indistinguishable from ridge. The frozen MOMENT encoder does not provide a generalisation advantage over handcrafted features on this dataset size.
+
+4. **Ridge is the most honest baseline.** Its val (0.47) and test (0.54) are closest together, CV is stable within its variance, and it requires no GPU. For a clinical deployment paper this matters.
+
+### Remaining gap before Q1 submission
+
+The device-stratified finding opens a new required section: **why does pendant fail?** Possible explanations to at least discuss: (a) only 6 val / 14 test pendant recordings — simply too few; (b) mFARS-US scores cluster near the top of the scale for ambulant patients, reducing dynamic range; (c) the 30-second standing task has less movement variance than the manipulation tasks, compressing feature distributions. This section can be written without new experiments.
